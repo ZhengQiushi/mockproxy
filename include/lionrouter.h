@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <atomic>
+#include <thread>
 #include <curl/curl.h>
 #include "../deps/json/json.hpp"
 using json = nlohmann::json;
@@ -71,13 +73,22 @@ private:
     // 
     std::map<std::string, int> tikv2storeID;                // TiKV IP -> TiKV Store ID
     std::map<int, std::string> storeID2tikv;                // TiKV IP -> TiKV Store ID
+    std::set<int> store_ids_;                               // 所有 store_id
 
-    // 新增成员变量
-    std::map<int, int> virtual_region_id_map_;               // 虚拟 region_id -> 实际 region_id
-    std::map<int, int> region_primary_store_id_;             // 实际 region_id -> 主节点 store_id
-    std::map<int, std::vector<int>> region_secondary_store_id_; // 实际 region_id -> 从节点 store_id 列表
-    std::set<int> store_ids_;                                // 所有 store_id
+    // 双缓冲机制
+    struct MetaInfo {
+        std::map<int, int> virtual_region_id_map_;               // 虚拟 region_id -> 实际 region_id
+        std::map<int, int> region_primary_store_id_;             // 实际 region_id -> 主节点 store_id
+        std::map<int, std::vector<int>> region_secondary_store_id_; // 实际 region_id -> 从节点 store_id 列表
+    };
 
+    MetaInfo meta_info_[2]; // 双缓冲
+    std::atomic<int> version_{0}; // 当前读写版本
+
+    // 线程相关成员变量
+    std::thread update_thread_;
+    std::atomic<bool> running_;
+    const int UPDATE_INTERVAL = 30; // 更新间隔，单位为秒
     static const int REGION_SIZE = 10000; // 分区大小
     int weight_ = 10; // 主副本的权重
 
@@ -89,7 +100,8 @@ private:
 
     static size_t WriteCallback(void* ptr, size_t size, size_t nmemb, std::string* data);
 
-
+    // 更新线程函数
+    void UpdateThreadFunction();
 };
 
 #endif // LIONROUTER_H

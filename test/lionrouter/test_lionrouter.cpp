@@ -350,7 +350,7 @@ TEST_F(LionRouterTest, TestInvalidStoreID) {
 TEST_F(LionRouterTest, TestVirtualRegionMapping) {
     EXPECT_EQ(router->GetRegionPrimaryStoreId(0), 1);
     EXPECT_EQ(router->GetRegionSecondaryStoreId(0), std::vector<int>({ 7}));
-    EXPECT_EQ(router->GetAllStoreIds(), std::set<int>({1, 5, 7}));
+    EXPECT_EQ(router->GetAllStoreIds(), std::set<int>({1, 4, 5, 6, 7}));
 }
 
 // 测试 ParseYcsbKey 函数

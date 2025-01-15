@@ -5,9 +5,9 @@
 #include <stdexcept>
 #include <iostream>
 #include <cstdio>
-
 #include <regex>
 #include <algorithm>
+// #include "../include/proxysql_debug.h"
 
 // 单例实例
 LionRouter& LionRouter::getInstance() {
@@ -16,11 +16,42 @@ LionRouter& LionRouter::getInstance() {
 }
 
 // 私有构造函数
-LionRouter::LionRouter() {
+LionRouter::LionRouter() : running_(true) {
+    update_thread_ = std::thread(&LionRouter::UpdateThreadFunction, this);
 }
 
-
 LionRouter::~LionRouter() {
+    running_ = false;
+    if (update_thread_.joinable()) {
+        update_thread_.join();
+    }
+}
+
+// 更新线程函数
+void LionRouter::UpdateThreadFunction() {
+    auto last_update_time = std::chrono::steady_clock::now(); // 记录上次更新时间
+
+    while (running_) {
+        try {
+            // 检查当前时间是否已经超过上次更新时间 + UPDATE_INTERVAL
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed_time = std::chrono::duration_cast<std::chrono::seconds>(now - last_update_time).count();
+
+            if (elapsed_time >= UPDATE_INTERVAL) {
+                printf("Starting to update region to store mapping.\n");
+                InitRegion2Store("http://10.77.70.210:10080/tables/benchbase/usertable/regions");
+                // proxy_info("Successfully updated region to store mapping.\n");
+
+                // 更新上次更新时间
+                last_update_time = now;
+            } else {
+                // 如果未达到更新时间间隔，则短暂休眠（例如 100ms），避免忙等待
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            }
+        } catch (const std::exception& e) {
+            // proxy_info("Failed to update region to store mapping: %s\n", e.what());
+        }
+    }
 }
 
 // 从 JSON 文件读取数据
@@ -39,46 +70,47 @@ nlohmann::json LionRouter::ReadJsonFile(const std::string& path) {
 
     return root;
 }
-    std::string LionRouter::FetchRemoteData(const std::string& url) {
-        CURL* curl = curl_easy_init();
-        if (!curl) {
-            throw std::runtime_error("Failed to initialize CURL");
-        }
 
-        std::string response;
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+std::string LionRouter::FetchRemoteData(const std::string& url) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        throw std::runtime_error("Failed to initialize CURL");
+    }
 
-        // 设置 SSL 验证选项（禁用验证）
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    std::string response;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 
-        // 设置超时选项
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10); // 请求超时时间为 10 秒
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10); // 连接超时时间为 10 秒
+    // 设置 SSL 验证选项（禁用验证）
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
 
-        // 执行请求
-        CURLcode res = curl_easy_perform(curl);
-        if (res != CURLE_OK) {
-            std::string error_msg = "CURL request failed: ";
-            error_msg += curl_easy_strerror(res);
-            curl_easy_cleanup(curl);
-            throw std::runtime_error(error_msg);
-        }
+    // 设置超时选项
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10); // 请求超时时间为 10 秒
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10); // 连接超时时间为 10 秒
 
-        // 清理 CURL 句柄
+    // 执行请求
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        std::string error_msg = "CURL request failed: ";
+        error_msg += curl_easy_strerror(res);
         curl_easy_cleanup(curl);
-
-        // 返回响应数据
-        return response;
+        throw std::runtime_error(error_msg);
     }
 
-    size_t LionRouter::WriteCallback(void* ptr, size_t size, size_t nmemb, std::string* data) {
-        data->append((char*)ptr, size * nmemb);
-        return size * nmemb;
-    }
-    
+    // 清理 CURL 句柄
+    curl_easy_cleanup(curl);
+
+    // 返回响应数据
+    return response;
+}
+
+size_t LionRouter::WriteCallback(void* ptr, size_t size, size_t nmemb, std::string* data) {
+    data->append((char*)ptr, size * nmemb);
+    return size * nmemb;
+}
+
 // 初始化 TiDB 和 Store 的映射关系
 void LionRouter::InitTidb2Store(const std::string& path) {
     nlohmann::json root = ReadJsonFile(path);
@@ -107,13 +139,16 @@ std::string LionRouter::GetStoreForTidb(const std::string& tidb) const {
 
 // 根据 Region ID 获取对应的主副本 Store
 int LionRouter::GetStoreForRegion(int actual_region_id) const {
-    auto it = region_primary_store_id_.find(actual_region_id);
-    if (it != region_primary_store_id_.end()) {
+    int read_index = version_.load() % 2; // 获取当前读取的缓冲区索引
+    const MetaInfo& meta_info = meta_info_[read_index];
+
+    auto it = meta_info.region_primary_store_id_.find(actual_region_id);
+    if (it != meta_info.region_primary_store_id_.end()) {
         return it->second; // 假设 Store 名称格式为 "storeX"
     }
-    // throw std::runtime_error("实际 region_id " + std::to_string(actual_region_id) + " 没有主节点信息");
-    return -1; // 如果找不到，返回空字符串
+    return -1; // 如果找不到，返回 -1
 }
+
 
 void LionRouter::InitTikv2Store(const std::string& pd_url) {
     std::string response = FetchRemoteData(pd_url);
@@ -137,6 +172,8 @@ void LionRouter::UpdateTikv2Store(const std::string& response) {
             // 填充映射关系
             tikv2storeID[tikv_ip] = store_id;
             storeID2tikv[store_id] = tikv_ip;
+            // 更新 store_id
+            store_ids_.insert(store_id);
         }
     } catch (const json::parse_error& e) {
         // JSON 解析错误
@@ -168,69 +205,85 @@ std::string LionRouter::GetTiKVForStoreID(int store_id) const {
     return ""; // 未找到
 }
 
-// 更新路由信息
+// 更新 Region 和 Store 的映射关系
 void LionRouter::UpdateRegion2Store(const std::string& response) {
-    json data = json::parse(response);
-    auto regions = data.find("record_regions");
-    if (regions == data.end()) {
-        throw std::runtime_error("Invalid JSON data: missing 'record_regions'");
-    }
+    try {
+        json data = json::parse(response);
+        auto regions = data.find("record_regions");
+        if (regions == data.end()) {
+            throw std::runtime_error("Invalid JSON data: missing 'record_regions'");
+        }
 
-    virtual_region_id_map_.clear();
-    region_primary_store_id_.clear();
-    region_secondary_store_id_.clear();
-    store_ids_.clear();
+        // 获取当前写入的缓冲区索引
+        int write_index = (version_.load() + 1) % 2;
+        MetaInfo& meta_info = meta_info_[write_index];
 
-    for (size_t virtual_id = 0; virtual_id < regions->size(); ++virtual_id) {
-        const auto& region = (*regions)[virtual_id];
-        int actual_id = region["region_id"];
-        virtual_region_id_map_[virtual_id] = actual_id;
+        // 清空旧数据
+        meta_info.virtual_region_id_map_.clear();
+        meta_info.region_primary_store_id_.clear();
+        meta_info.region_secondary_store_id_.clear();
 
-        const auto& leader = region["leader"];
-        const auto& peers = region["peers"];
+        // 更新数据
+        for (size_t virtual_id = 0; virtual_id < regions->size(); ++virtual_id) {
+            const auto& region = (*regions)[virtual_id];
+            int actual_id = region["region_id"];
+            meta_info.virtual_region_id_map_[virtual_id] = actual_id;
 
-        // 更新主节点
-        region_primary_store_id_[actual_id] = leader["store_id"];
+            const auto& leader = region["leader"];
+            const auto& peers = region["peers"];
 
-        // 更新从节点
-        std::vector<int> secondary_store_ids;
-        for (const auto& peer : peers) {
-            if (peer["id"] != leader["id"]) {
-                secondary_store_ids.push_back(peer["store_id"]);
+            // 更新主节点
+            meta_info.region_primary_store_id_[actual_id] = leader["store_id"];
+
+            // 更新从节点
+            std::vector<int> secondary_store_ids;
+            for (const auto& peer : peers) {
+                if (peer["id"] != leader["id"]) {
+                    secondary_store_ids.push_back(peer["store_id"]);
+                }
             }
+            meta_info.region_secondary_store_id_[actual_id] = secondary_store_ids;
         }
-        region_secondary_store_id_[actual_id] = secondary_store_ids;
 
-        // 更新所有 store_id
-        store_ids_.insert(leader["store_id"].get<int>());
-        for (const auto& peer : peers) {
-            store_ids_.insert(peer["store_id"].get<int>());
-        }
+        // 更新版本号
+        version_ = (version_.load() + 1) % 10; // 防止溢出
+    } catch (const std::exception& e) {
+        printf("Error in UpdateRegion2Store: %s\n", e.what());
+        throw;
     }
 }
 
-
 // 获取某个虚拟 region 的主节点 store_id
 int LionRouter::GetRegionPrimaryStoreId(int virtual_region_id) const {
-    auto it = virtual_region_id_map_.find(virtual_region_id);
-    if (it == virtual_region_id_map_.end()) {
+    int read_index = version_.load() % 2; // 获取当前读取的缓冲区索引
+    const MetaInfo& meta_info = meta_info_[read_index];
+
+    auto it = meta_info.virtual_region_id_map_.find(virtual_region_id);
+    if (it == meta_info.virtual_region_id_map_.end()) {
         throw std::runtime_error("虚拟 region_id " + std::to_string(virtual_region_id) + " 不存在");
     }
     int actual_region_id = it->second;
 
-    return GetStoreForRegion(actual_region_id);
+    auto primary_it = meta_info.region_primary_store_id_.find(actual_region_id);
+    if (primary_it == meta_info.region_primary_store_id_.end()) {
+        throw std::runtime_error("实际 region_id " + std::to_string(actual_region_id) + " 没有主节点信息");
+    }
+    return primary_it->second;
 }
 
 // 获取某个虚拟 region 的从节点 store_id 列表
 std::vector<int> LionRouter::GetRegionSecondaryStoreId(int virtual_region_id) const {
-    auto it = virtual_region_id_map_.find(virtual_region_id);
-    if (it == virtual_region_id_map_.end()) {
+    int read_index = version_.load() % 2; // 获取当前读取的缓冲区索引
+    const MetaInfo& meta_info = meta_info_[read_index];
+
+    auto it = meta_info.virtual_region_id_map_.find(virtual_region_id);
+    if (it == meta_info.virtual_region_id_map_.end()) {
         throw std::runtime_error("虚拟 region_id " + std::to_string(virtual_region_id) + " 不存在");
     }
     int actual_region_id = it->second;
 
-    auto secondary_it = region_secondary_store_id_.find(actual_region_id);
-    if (secondary_it == region_secondary_store_id_.end()) {
+    auto secondary_it = meta_info.region_secondary_store_id_.find(actual_region_id);
+    if (secondary_it == meta_info.region_secondary_store_id_.end()) {
         throw std::runtime_error("实际 region_id " + std::to_string(actual_region_id) + " 没有从节点信息");
     }
     return secondary_it->second;
@@ -240,7 +293,6 @@ std::vector<int> LionRouter::GetRegionSecondaryStoreId(int virtual_region_id) co
 std::set<int> LionRouter::GetAllStoreIds() const {
     return store_ids_;
 }
-
 
 // 解析 SQL 语句中的 YCSB_KEY，返回涉及的 region_id 数组
 std::vector<int> LionRouter::ParseYcsbKey(const std::string& sql) const {
