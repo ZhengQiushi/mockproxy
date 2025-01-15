@@ -1866,6 +1866,8 @@ __exit_process_mysql_query:
 			// NOTE: A pointer to the member 'this->rules_fast_routing' is required, since the value of the
 			// member could have changed before the function acquires the internal lock. See function doc.
 			dst_hg = search_rules_fast_routing_dest_hg(&this->rules_fast_routing, u, s, flagIN, true);
+		} else {
+			dst_hg = 1;
 		}
 
 		if (dst_hg != -1) {
