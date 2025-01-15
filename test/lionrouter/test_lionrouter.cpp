@@ -8,7 +8,7 @@ protected:
         router = &LionRouter::getInstance();
         router->InitTidb2Store("test_data/tidb2store.json");
         // router->InitRegion2Store("http://10.77.70.210:10080/tables/benchbase/usertable/regions");
-        // router->InitTikv2Store("http://10.77.70.250:12379");
+        // router->InitTikv2Store("http://10.77.70.250:12379/pd/api/v1/stores");
         // 加载 mock 数据
         const char* mock_data = R"(
         {
@@ -393,6 +393,9 @@ TEST_F(LionRouterTest, TestEvaluateHost) {
     EXPECT_TRUE(hostgroupid == 4);
 }
 
+TEST_F(LionRouterTest, TestTiupCMD) {
+    router->InitTikv2Store("http://10.77.70.250:12379/pd/api/v1/stores");
+}
 
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);

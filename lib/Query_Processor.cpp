@@ -202,6 +202,12 @@ Query_Processor::Query_Processor() {
 		exit(EXIT_FAILURE);
 	}
 	proxy_debug(PROXY_DEBUG_MYSQL_QUERY_PROCESSOR, 4, "Initializing Query Processor with version=0\n");
+	
+	// lionrouter
+    router = &LionRouter::getInstance();
+    router->InitTidb2Store("/home/zqs/proxysql-2.7/test/lionrouter/test_data/tidb2store.json");
+    router->InitRegion2Store("http://10.77.70.210:10080/tables/benchbase/usertable/regions");
+    router->InitTikv2Store("http://10.77.70.250:12379/pd/api/v1/stores");
 
 	// firewall
 	pthread_mutex_init(&global_mysql_firewall_whitelist_mutex, NULL);
@@ -1867,7 +1873,10 @@ __exit_process_mysql_query:
 			// member could have changed before the function acquires the internal lock. See function doc.
 			dst_hg = search_rules_fast_routing_dest_hg(&this->rules_fast_routing, u, s, flagIN, true);
 		} else {
-			dst_hg = 1;
+			// lionrouter execute
+			std::vector<int> region_ids = router->ParseYcsbKey(query);
+			int hostgroupid = router->EvaluateHost(region_ids);
+			dst_hg = hostgroupid;
 		}
 
 		if (dst_hg != -1) {

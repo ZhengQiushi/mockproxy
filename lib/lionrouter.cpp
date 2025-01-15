@@ -4,6 +4,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <iostream>
+#include <cstdio>
 
 #include <regex>
 #include <algorithm>
@@ -114,46 +115,41 @@ int LionRouter::GetStoreForRegion(int actual_region_id) const {
     return -1; // 如果找不到，返回空字符串
 }
 
-
-
-// 初始化 TiKV 和 Store 的映射关系
 void LionRouter::InitTikv2Store(const std::string& pd_url) {
-    // 构造 tiup 命令
-    std::string command = "tiup ctl:v8.5.0 pd -u " + pd_url + " store";
-
-    // 执行命令并获取输出
-    std::string response;
-    FILE* pipe = popen(command.c_str(), "r");
-    if (!pipe) {
-        throw std::runtime_error("Failed to execute tiup command");
-    }
-
-    char buffer[128];
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        response += buffer;
-    }
-    pclose(pipe);
-
+    std::string response = FetchRemoteData(pd_url);
+    // 更新 TiKV 和 Store 的映射关系
     UpdateTikv2Store(response);
 }
 
 void LionRouter::UpdateTikv2Store(const std::string& response) {
-    // 解析 JSON 数据
-    json json_data = json::parse(response);
+    try {
+        // 解析 JSON 数据
+        json json_data = json::parse(response);
 
-    // 遍历 stores 数组
-    for (const auto& store : json_data["stores"]) {
-        int store_id = store["store"]["id"];
-        std::string address = store["store"]["address"];
+        // 遍历 stores 数组
+        for (const auto& store : json_data["stores"]) {
+            int store_id = store["store"]["id"];
+            std::string address = store["store"]["address"];
 
-        // 提取 IP 地址
-        std::string tikv_ip = address.substr(0, address.find(':'));
+            // 提取 IP 地址
+            std::string tikv_ip = address.substr(0, address.find(':'));
 
-        // 填充映射关系
-        tikv2storeID[tikv_ip] = store_id;
-        storeID2tikv[store_id] = tikv_ip;
+            // 填充映射关系
+            tikv2storeID[tikv_ip] = store_id;
+            storeID2tikv[store_id] = tikv_ip;
+        }
+    } catch (const json::parse_error& e) {
+        // JSON 解析错误
+        std::cerr << "JSON parse error: " << e.what() << std::endl;
+    } catch (const json::type_error& e) {
+        // JSON 类型错误（例如访问不存在的字段）
+        std::cerr << "JSON type error: " << e.what() << std::endl;
+    } catch (const std::exception& e) {
+        // 其他异常
+        std::cerr << "Error in UpdateTikv2Store: " << e.what() << std::endl;
     }
 }
+
 // 根据 TiKV IP 获取对应的 Store ID
 int LionRouter::GetStoreIDForTiKV(const std::string& tikv_ip) const {
     auto it = tikv2storeID.find(tikv_ip);

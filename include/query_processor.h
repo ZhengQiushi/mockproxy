@@ -11,7 +11,7 @@
 #define DIGEST_STATS_FAST_THREADS   4
 
 #include "../deps/json/json.hpp"
-
+#include "lionrouter.h"
 
 #include "khash.h"
 KHASH_MAP_INIT_STR(khStrInt, int)
@@ -299,6 +299,7 @@ struct rules_mem_sts_t {
 
 class Query_Processor {
 	private:
+	LionRouter* router;
 	char rand_del[16];
 	umap_query_digest digest_umap;
 	umap_query_digest_text digest_text_umap;
