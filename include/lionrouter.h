@@ -1,7 +1,8 @@
 #ifndef LIONROUTER_H
 #define LIONROUTER_H
 
-#include <map>
+#include <unordered_map>  // 替换 map 为 unordered_map
+#include <unordered_set>  // 替换 map 为 unordered_map
 #include <string>
 #include <vector>
 #include <mutex>
@@ -13,7 +14,6 @@
 
 #include "../deps/json/json.hpp"
 using json = nlohmann::json;
-
 
 class LionRouter {
 public:
@@ -35,10 +35,10 @@ public:
     int GetRegionPrimaryStoreId(int virtual_region_id) const;
 
     // 获取某个虚拟 region 的从节点 store_id 列表
-    std::vector<int> GetRegionSecondaryStoreId(int virtual_region_id) const;
+    const std::unordered_set<int>& GetRegionSecondaryStoreId(int virtual_region_id) const;
 
     // 获取所有 store_id
-    std::set<int> GetAllStoreIds() const;
+    const std::set<int>& GetAllStoreIds() const;
 
     // 根据 TiDB 名称获取对应的 Store
     std::string GetStoreForTidb(const std::string& tidb) const;
@@ -58,7 +58,6 @@ public:
     // 根据 region_id 数组，计算最优的 hostgroupid
     int EvaluateHost(const std::vector<int>& region_ids);
 
-
     // 禁止复制和赋值
     LionRouter(const LionRouter&) = delete;
     LionRouter& operator=(const LionRouter&) = delete;
@@ -68,39 +67,35 @@ private:
     LionRouter();
     ~LionRouter();
 
-    std::map<int, int> store_sql_count; // 统计每个 store 的 SQL 个数
-    mutable std::mutex store_sql_mutex; // 保护 store_sql_count 的互斥锁
-    std::random_device rd;  // 随机数种子
-    std::mt19937 gen;       // 随机数生成器
-    std::uniform_int_distribution<> dis; // 均匀分布
+    std::unordered_map<int, int> store_sql_count;  // 替换 map 为 unordered_map
+    mutable std::mutex store_sql_mutex;  // 保护 store_sql_count 的互斥锁
 
     // 成员变量
-    std::map<std::string, std::string> tidb2store;          // TiDB IP -> TiKV IP
-    std::map<std::string, std::string> store2tidb;                //  TiKV Store ID -> TiDB IP 
+    std::unordered_map<std::string, std::string> tidb2store;  // TiDB IP -> TiKV IP
+    std::unordered_map<std::string, std::string> store2tidb;  // TiKV Store ID -> TiDB IP
 
-    std::map<std::string, int> tidb2hostgroup;              // TiDB IP -> Hostgroup
-    // 
-    std::map<std::string, int> tikv2storeID;                // TiKV IP -> TiKV Store ID
-    std::map<int, std::string> storeID2tikv;                // TiKV IP -> TiKV Store ID
-    std::set<int> store_ids_;                               // 所有 store_id
+    std::unordered_map<std::string, int> tidb2hostgroup;  // TiDB IP -> Hostgroup
+    std::unordered_map<std::string, int> tikv2storeID;    // TiKV IP -> TiKV Store ID
+    std::unordered_map<int, std::string> storeID2tikv;    // TiKV Store ID -> TiKV IP
+    std::set<int> store_ids_;  // 所有 store_id
 
     // 双缓冲机制
     struct MetaInfo {
-        std::map<int, int> virtual_region_id_map_;               // 虚拟 region_id -> 实际 region_id
-        std::map<int, int> region_primary_store_id_;             // 实际 region_id -> 主节点 store_id
-        std::map<int, std::vector<int>> region_secondary_store_id_; // 实际 region_id -> 从节点 store_id 列表
+        std::unordered_map<int, int> virtual_region_id_map_;  // 虚拟 region_id -> 实际 region_id
+        std::unordered_map<int, int> region_primary_store_id_;  // 实际 region_id -> 主节点 store_id
+        std::unordered_map<int, std::unordered_set<int>> region_secondary_store_id_;  // 实际 region_id -> 从节点 store_id 列表
     };
 
-    MetaInfo meta_info_[2]; // 双缓冲
-    std::atomic<int> version_{0}; // 当前读写版本
+    MetaInfo meta_info_[2];  // 双缓冲
+    std::atomic<int> version_{0};  // 当前读写版本
 
     // 线程相关成员变量
     std::thread update_thread_;
     std::atomic<bool> running_;
-    const int UPDATE_INTERVAL = 30; // 更新间隔，单位为秒
-    const int SHOW_STATS_INTERVAL = 5; // 更新间隔，单位为秒
-    static const int REGION_SIZE = 10000; // 分区大小
-    int weight_ = 10; // 主副本的权重
+    const int UPDATE_INTERVAL = 30;  // 更新间隔，单位为秒
+    const int SHOW_STATS_INTERVAL = 5;  // 更新间隔，单位为秒
+    static const int REGION_SIZE = 10000;  // 分区大小
+    int weight_ = 10;  // 主副本的权重
 
     // 辅助函数：从 JSON 文件读取数据
     nlohmann::json ReadJsonFile(const std::string& path);

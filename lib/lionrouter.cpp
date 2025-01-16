@@ -9,8 +9,6 @@
 #include <algorithm>
 #include <random>
 
-// #include "../include/proxysql_debug.h"
-
 // 单例实例
 LionRouter& LionRouter::getInstance() {
     static LionRouter instance;
@@ -18,7 +16,7 @@ LionRouter& LionRouter::getInstance() {
 }
 
 // 私有构造函数
-LionRouter::LionRouter() : gen(rd()), dis(0, 0), running_(true) {
+LionRouter::LionRouter() : running_(true) {
     update_thread_ = std::thread(&LionRouter::UpdateThreadFunction, this);
 }
 
@@ -31,7 +29,7 @@ LionRouter::~LionRouter() {
 
 // 更新线程函数
 void LionRouter::UpdateThreadFunction() {
-    auto last_update_time = std::chrono::steady_clock::now(); // 记录上次更新时间
+    auto last_update_time = std::chrono::steady_clock::now();  // 记录上次更新时间
     auto last_stat_time = std::chrono::steady_clock::now();   // 记录上次统计时间
 
     while (running_) {
@@ -43,12 +41,12 @@ void LionRouter::UpdateThreadFunction() {
             if (elapsed_update_time >= UPDATE_INTERVAL) {
                 printf("Starting to update region to store mapping.\n");
                 InitRegion2Store("http://10.77.70.210:10080/tables/benchbase/usertable/regions");
-                last_update_time = now; // 更新上次更新时间
+                last_update_time = now;  // 更新上次更新时间
             }
 
             // 检查是否需要统计 SQL 路由情况
             auto elapsed_stat_time = std::chrono::duration_cast<std::chrono::seconds>(now - last_stat_time).count();
-            if (elapsed_stat_time >= SHOW_STATS_INTERVAL) { // 每 10 秒统计一次
+            if (elapsed_stat_time >= SHOW_STATS_INTERVAL) {  // 每 10 秒统计一次
                 // 加锁保护 store_sql_count 的访问
                 std::lock_guard<std::mutex> lock(store_sql_mutex);
 
@@ -60,7 +58,7 @@ void LionRouter::UpdateThreadFunction() {
 
                 // 重置统计
                 store_sql_count.clear();
-                last_stat_time = now; // 更新上次统计时间
+                last_stat_time = now;  // 更新上次统计时间
             }
 
             // 如果未达到更新时间间隔，则短暂休眠（例如 100ms），避免忙等待
@@ -104,8 +102,8 @@ std::string LionRouter::FetchRemoteData(const std::string& url) {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
 
     // 设置超时选项
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10); // 请求超时时间为 10 秒
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10); // 连接超时时间为 10 秒
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10);  // 请求超时时间为 10 秒
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10);  // 连接超时时间为 10 秒
 
     // 执行请求
     CURLcode res = curl_easy_perform(curl);
@@ -151,21 +149,20 @@ std::string LionRouter::GetStoreForTidb(const std::string& tidb) const {
     if (it != tidb2store.end()) {
         return it->second;
     }
-    return ""; // 如果找不到，返回空字符串
+    return "";  // 如果找不到，返回空字符串
 }
 
 // 根据 Region ID 获取对应的主副本 Store
 int LionRouter::GetStoreForRegion(int actual_region_id) const {
-    int read_index = version_.load() % 2; // 获取当前读取的缓冲区索引
+    int read_index = version_.load() % 2;  // 获取当前读取的缓冲区索引
     const MetaInfo& meta_info = meta_info_[read_index];
 
     auto it = meta_info.region_primary_store_id_.find(actual_region_id);
     if (it != meta_info.region_primary_store_id_.end()) {
-        return it->second; // 假设 Store 名称格式为 "storeX"
+        return it->second;  // 假设 Store 名称格式为 "storeX"
     }
-    return -1; // 如果找不到，返回 -1
+    return -1;  // 如果找不到，返回 -1
 }
-
 
 void LionRouter::InitTikv2Store(const std::string& pd_url) {
     std::string response = FetchRemoteData(pd_url);
@@ -210,7 +207,7 @@ int LionRouter::GetStoreIDForTiKV(const std::string& tikv_ip) const {
     if (it != tikv2storeID.end()) {
         return it->second;
     }
-    return -1; // 未找到
+    return -1;  // 未找到
 }
 
 // 根据 Store ID 获取对应的 TiKV IP
@@ -219,7 +216,7 @@ std::string LionRouter::GetTiKVForStoreID(int store_id) const {
     if (it != storeID2tikv.end()) {
         return it->second;
     }
-    return ""; // 未找到
+    return "";  // 未找到
 }
 
 // 更新 Region 和 Store 的映射关系
@@ -253,17 +250,17 @@ void LionRouter::UpdateRegion2Store(const std::string& response) {
             meta_info.region_primary_store_id_[actual_id] = leader["store_id"];
 
             // 更新从节点
-            std::vector<int> secondary_store_ids;
+            std::unordered_set<int> secondary_store_ids;
             for (const auto& peer : peers) {
                 if (peer["id"] != leader["id"]) {
-                    secondary_store_ids.push_back(peer["store_id"]);
+                    secondary_store_ids.insert(peer["store_id"].get<int>());
                 }
             }
             meta_info.region_secondary_store_id_[actual_id] = secondary_store_ids;
         }
 
         // 更新版本号
-        version_ = (version_.load() + 1) % 10; // 防止溢出
+        version_ = (version_.load() + 1) % 10;  // 防止溢出
     } catch (const std::exception& e) {
         printf("Error in UpdateRegion2Store: %s\n", e.what());
         throw;
@@ -272,7 +269,7 @@ void LionRouter::UpdateRegion2Store(const std::string& response) {
 
 // 获取某个虚拟 region 的主节点 store_id
 int LionRouter::GetRegionPrimaryStoreId(int virtual_region_id) const {
-    int read_index = version_.load() % 2; // 获取当前读取的缓冲区索引
+    int read_index = version_.load() % 2;  // 获取当前读取的缓冲区索引
     const MetaInfo& meta_info = meta_info_[read_index];
 
     auto it = meta_info.virtual_region_id_map_.find(virtual_region_id);
@@ -289,8 +286,8 @@ int LionRouter::GetRegionPrimaryStoreId(int virtual_region_id) const {
 }
 
 // 获取某个虚拟 region 的从节点 store_id 列表
-std::vector<int> LionRouter::GetRegionSecondaryStoreId(int virtual_region_id) const {
-    int read_index = version_.load() % 2; // 获取当前读取的缓冲区索引
+const std::unordered_set<int>& LionRouter::GetRegionSecondaryStoreId(int virtual_region_id) const {
+    int read_index = version_.load() % 2;  // 获取当前读取的缓冲区索引
     const MetaInfo& meta_info = meta_info_[read_index];
 
     auto it = meta_info.virtual_region_id_map_.find(virtual_region_id);
@@ -307,36 +304,87 @@ std::vector<int> LionRouter::GetRegionSecondaryStoreId(int virtual_region_id) co
 }
 
 // 获取所有 store_id
-std::set<int> LionRouter::GetAllStoreIds() const {
+const std::set<int>& LionRouter::GetAllStoreIds() const {
     return store_ids_;
 }
 
 // 解析 SQL 语句中的 YCSB_KEY，返回涉及的 region_id 数组
-std::vector<int> LionRouter::ParseYcsbKey(const std::string& sql) const {
-    std::vector<int> region_ids;
-    std::regex key_pattern(R"(YCSB_KEY\s*=\s*(\d+))"); // 匹配 YCSB_KEY = <数字>
-    std::smatch matches;
+// std::vector<int> LionRouter::ParseYcsbKey(const std::string& sql) const {
+//     std::unordered_set<int> region_ids_set;  // 使用 unordered_set 去重
+//     std::regex key_pattern(R"(YCSB_KEY\s*=\s*(\d+))");  // 匹配 YCSB_KEY = <数字>
+//     std::smatch matches;
 
-    // 查找所有匹配的 YCSB_KEY
-    std::string::const_iterator search_start(sql.cbegin());
-    while (std::regex_search(search_start, sql.cend(), matches, key_pattern)) {
-        int key = std::stoi(matches[1].str());
-        int region_id = key / REGION_SIZE; // 计算 region_id
-        region_ids.push_back(region_id);
-        search_start = matches.suffix().first;
+//     // 查找所有匹配的 YCSB_KEY
+//     std::string::const_iterator search_start(sql.cbegin());
+//     while (std::regex_search(search_start, sql.cend(), matches, key_pattern)) {
+//         int key = std::stoi(matches[1].str());
+//         int region_id = key / REGION_SIZE;  // 计算 region_id
+//         region_ids_set.insert(region_id);
+//         search_start = matches.suffix().first;
+//     }
+
+//     // 将 unordered_set 转换为 vector
+//     return std::vector<int>(region_ids_set.begin(), region_ids_set.end());
+// }
+// 解析 SQL 语句中的 YCSB_KEY，返回涉及的 region_id 数组
+std::vector<int> LionRouter::ParseYcsbKey(const std::string& sql) const {
+    std::unordered_set<int> region_ids_set;  // 使用 unordered_set 去重
+
+    // 查找 WHERE YCSB_KEY IN (...) 部分
+    size_t where_pos = sql.find("WHERE YCSB_KEY IN (");
+    if (where_pos == std::string::npos) {
+        // 如果没有 WHERE 子句，直接返回空
+        return std::vector<int>();
     }
 
-    // 去重
-    std::sort(region_ids.begin(), region_ids.end());
-    region_ids.erase(std::unique(region_ids.begin(), region_ids.end()), region_ids.end());
+    // 提取括号内的内容
+    size_t start_pos = sql.find('(', where_pos);
+    size_t end_pos = sql.find(')', start_pos);
+    if (start_pos == std::string::npos || end_pos == std::string::npos) {
+        // 如果括号不完整，直接返回空
+        return std::vector<int>();
+    }
 
-    return region_ids;
+    std::string key_list = sql.substr(start_pos + 1, end_pos - start_pos - 1);
+
+    // 解析逗号分隔的 YCSB_KEY
+    size_t pos = 0;
+    while (pos < key_list.size()) {
+        // 跳过空格
+        while (pos < key_list.size() && std::isspace(key_list[pos])) {
+            pos++;
+        }
+
+        // 提取数字
+        size_t num_start = pos;
+        while (pos < key_list.size() && std::isdigit(key_list[pos])) {
+            pos++;
+        }
+
+        if (num_start < pos) {
+            int key = std::stoi(key_list.substr(num_start, pos - num_start));
+            int region_id = key / REGION_SIZE;  // 计算 region_id
+            region_ids_set.insert(region_id);
+        }
+
+        // 跳过逗号
+        while (pos < key_list.size() && key_list[pos] != ',') {
+            pos++;
+        }
+        pos++;  // 跳过逗号
+    }
+
+    // 将 unordered_set 转换为 vector
+    return std::vector<int>(region_ids_set.begin(), region_ids_set.end());
 }
 
 // 根据 region_id 数组，计算最优的 hostgroupid
 int LionRouter::EvaluateHost(const std::vector<int>& region_ids) {
-    std::map<int, int> costs; // store_id -> 开销
-
+    std::vector<int> best_store_ids(GetAllStoreIds().size());
+    std::unordered_map<int, int> costs;
+    int idx = 0;
+    int min_cost = 0;
+    
     // 遍历所有 store_id
     for (int store_id : GetAllStoreIds()) {
         int primary_count = 0;
@@ -345,41 +393,29 @@ int LionRouter::EvaluateHost(const std::vector<int>& region_ids) {
         // 计算主副本和从副本的数量
         for (int region_id : region_ids) {
             int primary_store_id = GetRegionPrimaryStoreId(region_id);
-            std::vector<int> secondary_store_ids = GetRegionSecondaryStoreId(region_id);
+            const std::unordered_set<int>& secondary_store_ids = GetRegionSecondaryStoreId(region_id);
 
             if (primary_store_id == store_id) {
                 primary_count++;
-            }
-            if (std::find(secondary_store_ids.begin(), secondary_store_ids.end(), store_id) != secondary_store_ids.end()) {
+            } else if (secondary_store_ids.count(store_id)) {
                 secondary_count++;
             }
         }
 
         // 计算开销
         int cost = -(primary_count * weight_ + secondary_count);
+        if(min_cost == cost){
+            best_store_ids[idx ++ ] = store_id;
+        } else if(min_cost > cost){
+            min_cost = cost;
+            idx = 0;
+            best_store_ids[idx ++ ] = store_id;
+        }
         costs[store_id] = cost;
     }
 
-    // 选择开销最小的 store_id
-    auto min_cost_it = std::min_element(costs.begin(), costs.end(),
-        [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
-            return a.second < b.second;
-        });
-
-    int min_cost = min_cost_it->second;
-
-    // 收集所有开销等于最小开销的 store_id
-    std::vector<int> best_store_ids;
-    for (const auto& [store_id, cost] : costs) {
-        if (cost == min_cost) {
-            best_store_ids.push_back(store_id);
-        }
-    }
-
     // 更新均匀分布的范围
-    dis.param(std::uniform_int_distribution<>::param_type(0, best_store_ids.size() - 1));
-
-    int best_store_id = best_store_ids[dis(gen)];
+    int best_store_id = best_store_ids[random() % idx];
 
     // 找到与 store_id 相邻部署的 TiDB
     std::string best_tikv_ip = GetTiKVForStoreID(best_store_id);
@@ -390,7 +426,7 @@ int LionRouter::EvaluateHost(const std::vector<int>& region_ids) {
     // 找到与 TiKV 相邻部署的 TiDB
     auto tidb_it = store2tidb.find(best_tikv_ip);
     if (tidb_it == store2tidb.end()) {
-        throw std::runtime_error("No TiDB found for TiKV StoreID: " + best_store_id);
+        throw std::runtime_error("No TiDB found for TiKV StoreID: " + std::to_string(best_store_id));
     }
     std::string best_tidb_ip = tidb_it->second;
 
@@ -399,13 +435,13 @@ int LionRouter::EvaluateHost(const std::vector<int>& region_ids) {
     if (hostgroup_it == tidb2hostgroup.end()) {
         throw std::runtime_error("No hostgroup found for TiDB IP: " + best_tidb_ip);
     }
-    
+
     int hostgroup_id = hostgroup_it->second;
     // 尝试加锁，如果成功则更新统计
     if (store_sql_mutex.try_lock()) {
-        store_sql_count[best_store_id]++; // 统计路由到该 hostgroup 的 SQL 个数
+        store_sql_count[best_store_id]++;  // 统计路由到该 hostgroup 的 SQL 个数
         store_sql_mutex.unlock();
     }
 
-    return hostgroup_id; // 返回最优的 hostgroupid
+    return hostgroup_id;  // 返回最优的 hostgroupid
 }

@@ -349,7 +349,7 @@ TEST_F(LionRouterTest, TestInvalidStoreID) {
 
 TEST_F(LionRouterTest, TestVirtualRegionMapping) {
     EXPECT_EQ(router->GetRegionPrimaryStoreId(0), 1);
-    EXPECT_EQ(router->GetRegionSecondaryStoreId(0), std::vector<int>({ 7}));
+    EXPECT_EQ(router->GetRegionSecondaryStoreId(0), std::unordered_set<int>({ 7}));
     EXPECT_EQ(router->GetAllStoreIds(), std::set<int>({1, 4, 5, 6, 7}));
 }
 
@@ -374,7 +374,7 @@ TEST_F(LionRouterTest, TestParseYcsbKey) {
     )";
 
     std::vector<int> region_ids = router->ParseYcsbKey(sql);
-    std::vector<int> expected_region_ids = {0, 1}; // 10/10000=0, 1015/10000=1
+    std::vector<int> expected_region_ids = {1, 0}; // 10/10000=0, 1015/10000=1
 
     EXPECT_EQ(region_ids, expected_region_ids);
 }
