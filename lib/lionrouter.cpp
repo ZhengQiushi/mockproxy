@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <regex>
 #include <algorithm>
+#include <random>
+
 // #include "../include/proxysql_debug.h"
 
 // 单例实例
@@ -16,7 +18,7 @@ LionRouter& LionRouter::getInstance() {
 }
 
 // 私有构造函数
-LionRouter::LionRouter() : running_(true) {
+LionRouter::LionRouter() : gen(rd()), dis(0, 0), running_(true) {
     update_thread_ = std::thread(&LionRouter::UpdateThreadFunction, this);
 }
 
@@ -30,24 +32,39 @@ LionRouter::~LionRouter() {
 // 更新线程函数
 void LionRouter::UpdateThreadFunction() {
     auto last_update_time = std::chrono::steady_clock::now(); // 记录上次更新时间
+    auto last_stat_time = std::chrono::steady_clock::now();   // 记录上次统计时间
 
     while (running_) {
         try {
             // 检查当前时间是否已经超过上次更新时间 + UPDATE_INTERVAL
             auto now = std::chrono::steady_clock::now();
-            auto elapsed_time = std::chrono::duration_cast<std::chrono::seconds>(now - last_update_time).count();
-
-            if (elapsed_time >= UPDATE_INTERVAL) {
+            // 检查是否需要更新路由信息
+            auto elapsed_update_time = std::chrono::duration_cast<std::chrono::seconds>(now - last_update_time).count();
+            if (elapsed_update_time >= UPDATE_INTERVAL) {
                 printf("Starting to update region to store mapping.\n");
                 InitRegion2Store("http://10.77.70.210:10080/tables/benchbase/usertable/regions");
-                // proxy_info("Successfully updated region to store mapping.\n");
-
-                // 更新上次更新时间
-                last_update_time = now;
-            } else {
-                // 如果未达到更新时间间隔，则短暂休眠（例如 100ms），避免忙等待
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                last_update_time = now; // 更新上次更新时间
             }
+
+            // 检查是否需要统计 SQL 路由情况
+            auto elapsed_stat_time = std::chrono::duration_cast<std::chrono::seconds>(now - last_stat_time).count();
+            if (elapsed_stat_time >= SHOW_STATS_INTERVAL) { // 每 10 秒统计一次
+                // 加锁保护 store_sql_count 的访问
+                std::lock_guard<std::mutex> lock(store_sql_mutex);
+
+                // 打印统计结果
+                printf("SQL routing statistics (last %d seconds):\n", SHOW_STATS_INTERVAL);
+                for (const auto& [store_id, count] : store_sql_count) {
+                    printf("Store %d: %d SQLs\n", store_id, count);
+                }
+
+                // 重置统计
+                store_sql_count.clear();
+                last_stat_time = now; // 更新上次统计时间
+            }
+
+            // 如果未达到更新时间间隔，则短暂休眠（例如 100ms），避免忙等待
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         } catch (const std::exception& e) {
             // proxy_info("Failed to update region to store mapping: %s\n", e.what());
         }
@@ -317,7 +334,7 @@ std::vector<int> LionRouter::ParseYcsbKey(const std::string& sql) const {
 }
 
 // 根据 region_id 数组，计算最优的 hostgroupid
-int LionRouter::EvaluateHost(const std::vector<int>& region_ids) const {
+int LionRouter::EvaluateHost(const std::vector<int>& region_ids) {
     std::map<int, int> costs; // store_id -> 开销
 
     // 遍历所有 store_id
@@ -349,7 +366,20 @@ int LionRouter::EvaluateHost(const std::vector<int>& region_ids) const {
             return a.second < b.second;
         });
 
-    int best_store_id = min_cost_it->first;
+    int min_cost = min_cost_it->second;
+
+    // 收集所有开销等于最小开销的 store_id
+    std::vector<int> best_store_ids;
+    for (const auto& [store_id, cost] : costs) {
+        if (cost == min_cost) {
+            best_store_ids.push_back(store_id);
+        }
+    }
+
+    // 更新均匀分布的范围
+    dis.param(std::uniform_int_distribution<>::param_type(0, best_store_ids.size() - 1));
+
+    int best_store_id = best_store_ids[dis(gen)];
 
     // 找到与 store_id 相邻部署的 TiDB
     std::string best_tikv_ip = GetTiKVForStoreID(best_store_id);
@@ -369,6 +399,13 @@ int LionRouter::EvaluateHost(const std::vector<int>& region_ids) const {
     if (hostgroup_it == tidb2hostgroup.end()) {
         throw std::runtime_error("No hostgroup found for TiDB IP: " + best_tidb_ip);
     }
+    
+    int hostgroup_id = hostgroup_it->second;
+    // 尝试加锁，如果成功则更新统计
+    if (store_sql_mutex.try_lock()) {
+        store_sql_count[best_store_id]++; // 统计路由到该 hostgroup 的 SQL 个数
+        store_sql_mutex.unlock();
+    }
 
-    return hostgroup_it->second; // 返回最优的 hostgroupid
+    return hostgroup_id; // 返回最优的 hostgroupid
 }

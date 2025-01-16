@@ -4,10 +4,13 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <mutex>
 #include <set>
 #include <atomic>
 #include <thread>
 #include <curl/curl.h>
+#include <random>
+
 #include "../deps/json/json.hpp"
 using json = nlohmann::json;
 
@@ -53,7 +56,7 @@ public:
     std::vector<int> ParseYcsbKey(const std::string& sql) const;
 
     // 根据 region_id 数组，计算最优的 hostgroupid
-    int EvaluateHost(const std::vector<int>& region_ids) const;
+    int EvaluateHost(const std::vector<int>& region_ids);
 
 
     // 禁止复制和赋值
@@ -64,6 +67,12 @@ private:
     // 私有构造函数
     LionRouter();
     ~LionRouter();
+
+    std::map<int, int> store_sql_count; // 统计每个 store 的 SQL 个数
+    mutable std::mutex store_sql_mutex; // 保护 store_sql_count 的互斥锁
+    std::random_device rd;  // 随机数种子
+    std::mt19937 gen;       // 随机数生成器
+    std::uniform_int_distribution<> dis; // 均匀分布
 
     // 成员变量
     std::map<std::string, std::string> tidb2store;          // TiDB IP -> TiKV IP
@@ -89,6 +98,7 @@ private:
     std::thread update_thread_;
     std::atomic<bool> running_;
     const int UPDATE_INTERVAL = 30; // 更新间隔，单位为秒
+    const int SHOW_STATS_INTERVAL = 5; // 更新间隔，单位为秒
     static const int REGION_SIZE = 10000; // 分区大小
     int weight_ = 10; // 主副本的权重
 
