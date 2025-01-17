@@ -53,7 +53,7 @@ public:
     std::string GetTiKVForStoreID(int store_id) const;
 
     // 解析 SQL 语句中的 YCSB_KEY，返回涉及的 region_id 数组
-    std::vector<int> ParseYcsbKey(const std::string& sql) const;
+    std::vector<int> ParseYcsbKey(const std::string& sql);
 
     // 根据 region_id 数组，计算最优的 hostgroupid
     int EvaluateHost(const std::vector<int>& region_ids);
@@ -62,13 +62,29 @@ public:
     LionRouter(const LionRouter&) = delete;
     LionRouter& operator=(const LionRouter&) = delete;
 
+    void RecordTransactionDetails(const std::vector<int>& keys, int dst_store_id);
 private:
     // 私有构造函数
     LionRouter();
     ~LionRouter();
 
+    // 统计stats
     std::unordered_map<int, int> store_sql_count;  // 替换 map 为 unordered_map
     mutable std::mutex store_sql_mutex;  // 保护 store_sql_count 的互斥锁
+
+    std::mutex cross_partition_mutex;  // 保护跨分区事务统计的互斥锁
+    int total_transactions = 0;  // 总事务数
+    int cross_partition_transactions = 0;  // 跨分区事务数
+    // std::unordered_map<int, int> store_transaction_count;  // 每个 store_id 的事务数
+    std::unordered_map<int, int> store_cross_partition_count;  // 每个 store_id 的跨分区事务数
+    struct TxnLog {
+        std::vector<int> keys;
+        std::unordered_set<int> region_ids;
+        int store_id;
+        TxnLog(const std::vector<int>& k, const std::unordered_set<int>& r, int s_id): keys(k), region_ids(r), store_id(s_id) {
+        }
+    };
+    std::vector<TxnLog> transaction_details;  // 记录每个事务的 keys 和分区
 
     // 成员变量
     std::unordered_map<std::string, std::string> tidb2store;  // TiDB IP -> TiKV IP

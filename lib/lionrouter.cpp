@@ -27,6 +27,29 @@ LionRouter::~LionRouter() {
     }
 }
 
+void LionRouter::RecordTransactionDetails(const std::vector<int>& keys, int dst_store_id) {
+    std::lock_guard<std::mutex> lock(cross_partition_mutex);
+    total_transactions++;
+
+    // 记录事务涉及的分区
+    std::unordered_set<int> partitions;
+    std::unordered_set<int> stores;
+    for (int key : keys) {
+        int region_id = key / REGION_SIZE;
+        partitions.insert(region_id);
+        stores.insert(GetRegionPrimaryStoreId(region_id));
+    }
+
+    // 如果是跨分区事务
+    if (stores.size() > 1) {
+        cross_partition_transactions++;
+        store_cross_partition_count[dst_store_id]++;  // 统计每个 store_id 的跨分区事务数
+        // 记录事务的 keys 和分区
+        transaction_details.emplace_back(TxnLog(keys, partitions, dst_store_id));
+    }
+
+}
+
 // 更新线程函数
 void LionRouter::UpdateThreadFunction() {
     auto last_update_time = std::chrono::steady_clock::now();  // 记录上次更新时间
@@ -44,22 +67,58 @@ void LionRouter::UpdateThreadFunction() {
                 last_update_time = now;  // 更新上次更新时间
             }
 
-            // 检查是否需要统计 SQL 路由情况
+            // 检查是否需要统计 SQL 路由情况和跨分区事务比例
             auto elapsed_stat_time = std::chrono::duration_cast<std::chrono::seconds>(now - last_stat_time).count();
             if (elapsed_stat_time >= SHOW_STATS_INTERVAL) {  // 每 10 秒统计一次
-                // 加锁保护 store_sql_count 的访问
+                // 加锁保护 store_sql_count 和跨分区事务统计的访问
                 std::lock_guard<std::mutex> lock(store_sql_mutex);
+                std::lock_guard<std::mutex> cross_lock(cross_partition_mutex);
 
-                // 打印统计结果
+                // 打印 SQL 路由统计结果
                 printf("SQL routing statistics (last %d seconds):\n", SHOW_STATS_INTERVAL);
                 for (const auto& [store_id, count] : store_sql_count) {
                     printf("Store %d: %d SQLs\n", store_id, count);
                 }
 
+                // 打印跨分区事务统计结果
+                if (total_transactions > 0) {
+                    double cross_partition_ratio = static_cast<double>(cross_partition_transactions) / total_transactions * 100;
+                    printf("Cross-partition transaction ratio: %.2f%% (%d/%d)\n", cross_partition_ratio, cross_partition_transactions, total_transactions);
+
+                    // 打印每个 store_id 的跨分区事务比例
+                    for (const auto& [store_id, transaction_count] : store_cross_partition_count) {
+                        printf("Cross Store %d: %d\n", store_id, transaction_count);
+                    }
+
+                    // 打印分布式事务的 key 与涉及的分区及节点
+                    // printf("Distributed transaction details:\n");
+                    // for (const auto& log : transaction_details) {
+                    //     // printf("  Keys: ");
+                    //     // for (int key : keys) {
+                    //     //     printf("%d ", key);
+                    //     // }
+                        
+                    //     printf("Store %d |   ", log.store_id);
+                    //     for (int region_id : log.region_ids) {
+                    //         printf("%d ", region_id);
+                    //     }
+                    //     printf("\n");
+                    // }
+                } else {
+                    // printf("No transactions recorded.\n");
+                }
+
+
+
                 // 重置统计
                 store_sql_count.clear();
+                total_transactions = 0;
+                cross_partition_transactions = 0;
+                store_cross_partition_count.clear();
+                transaction_details.clear();
                 last_stat_time = now;  // 更新上次统计时间
             }
+
 
             // 如果未达到更新时间间隔，则短暂休眠（例如 100ms），避免忙等待
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
@@ -309,26 +368,8 @@ const std::set<int>& LionRouter::GetAllStoreIds() const {
 }
 
 // 解析 SQL 语句中的 YCSB_KEY，返回涉及的 region_id 数组
-// std::vector<int> LionRouter::ParseYcsbKey(const std::string& sql) const {
-//     std::unordered_set<int> region_ids_set;  // 使用 unordered_set 去重
-//     std::regex key_pattern(R"(YCSB_KEY\s*=\s*(\d+))");  // 匹配 YCSB_KEY = <数字>
-//     std::smatch matches;
-
-//     // 查找所有匹配的 YCSB_KEY
-//     std::string::const_iterator search_start(sql.cbegin());
-//     while (std::regex_search(search_start, sql.cend(), matches, key_pattern)) {
-//         int key = std::stoi(matches[1].str());
-//         int region_id = key / REGION_SIZE;  // 计算 region_id
-//         region_ids_set.insert(region_id);
-//         search_start = matches.suffix().first;
-//     }
-
-//     // 将 unordered_set 转换为 vector
-//     return std::vector<int>(region_ids_set.begin(), region_ids_set.end());
-// }
-// 解析 SQL 语句中的 YCSB_KEY，返回涉及的 region_id 数组
-std::vector<int> LionRouter::ParseYcsbKey(const std::string& sql) const {
-    std::unordered_set<int> region_ids_set;  // 使用 unordered_set 去重
+std::vector<int> LionRouter::ParseYcsbKey(const std::string& sql) {
+    std::unordered_set<int> keys_set;  // 使用 unordered_set 去重
 
     // 查找 WHERE YCSB_KEY IN (...) 部分
     size_t where_pos = sql.find("WHERE YCSB_KEY IN (");
@@ -363,8 +404,7 @@ std::vector<int> LionRouter::ParseYcsbKey(const std::string& sql) const {
 
         if (num_start < pos) {
             int key = std::stoi(key_list.substr(num_start, pos - num_start));
-            int region_id = key / REGION_SIZE;  // 计算 region_id
-            region_ids_set.insert(region_id);
+            keys_set.insert(key);
         }
 
         // 跳过逗号
@@ -373,13 +413,12 @@ std::vector<int> LionRouter::ParseYcsbKey(const std::string& sql) const {
         }
         pos++;  // 跳过逗号
     }
-
     // 将 unordered_set 转换为 vector
-    return std::vector<int>(region_ids_set.begin(), region_ids_set.end());
+    return std::vector<int>(keys_set.begin(), keys_set.end());
 }
 
 // 根据 region_id 数组，计算最优的 hostgroupid
-int LionRouter::EvaluateHost(const std::vector<int>& region_ids) {
+int LionRouter::EvaluateHost(const std::vector<int>& keys) {
     std::vector<int> best_store_ids(GetAllStoreIds().size());
     std::unordered_map<int, int> costs;
     int idx = 0;
@@ -391,7 +430,8 @@ int LionRouter::EvaluateHost(const std::vector<int>& region_ids) {
         int secondary_count = 0;
 
         // 计算主副本和从副本的数量
-        for (int region_id : region_ids) {
+        for (int key : keys) {
+            int region_id = key / REGION_SIZE;
             int primary_store_id = GetRegionPrimaryStoreId(region_id);
             const std::unordered_set<int>& secondary_store_ids = GetRegionSecondaryStoreId(region_id);
 
@@ -416,6 +456,7 @@ int LionRouter::EvaluateHost(const std::vector<int>& region_ids) {
 
     // 更新均匀分布的范围
     int best_store_id = best_store_ids[random() % idx];
+	RecordTransactionDetails(keys, best_store_id);
 
     // 找到与 store_id 相邻部署的 TiDB
     std::string best_tikv_ip = GetTiKVForStoreID(best_store_id);

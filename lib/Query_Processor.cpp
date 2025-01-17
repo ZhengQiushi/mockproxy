@@ -1874,9 +1874,9 @@ __exit_process_mysql_query:
 			dst_hg = search_rules_fast_routing_dest_hg(&this->rules_fast_routing, u, s, flagIN, true);
 		} else {
 			// lionrouter execute
-			std::vector<int> region_ids = router->ParseYcsbKey(query);
-			if(region_ids.size() > 0){
-				int hostgroupid = router->EvaluateHost(region_ids);
+			std::vector<int> keys = router->ParseYcsbKey(query);
+			if(keys.size() > 0){
+				int hostgroupid = router->EvaluateHost(keys);
 				dst_hg = hostgroupid;
 			}
 			// int rnd = random() % 5;
