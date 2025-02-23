@@ -63,7 +63,7 @@ void LionRouter::UpdateThreadFunction() {
             auto elapsed_update_time = std::chrono::duration_cast<std::chrono::seconds>(now - last_update_time).count();
             if (elapsed_update_time >= UPDATE_INTERVAL) {
                 printf("Starting to update region to store mapping.\n");
-                InitRegion2Store("http://10.77.70.210:10080/tables/benchbase/usertable/regions");
+                InitRegion2Store("http://10.77.70.212:10080/tables/benchbase/usertable/regions");
                 last_update_time = now;  // 更新上次更新时间
             }
 
@@ -322,7 +322,7 @@ void LionRouter::UpdateRegion2Store(const std::string& response) {
         version_ = (version_.load() + 1) % 10;  // 防止溢出
     } catch (const std::exception& e) {
         printf("Error in UpdateRegion2Store: %s\n", e.what());
-        throw;
+        // throw;
     }
 }
 

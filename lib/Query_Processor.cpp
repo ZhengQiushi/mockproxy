@@ -206,7 +206,7 @@ Query_Processor::Query_Processor() {
 	// lionrouter
     router = &LionRouter::getInstance();
     router->InitTidb2Store("/home/zqs/proxysql-2.7/test/lionrouter/test_data/tidb2store.json");
-    router->InitRegion2Store("http://10.77.70.210:10080/tables/benchbase/usertable/regions");
+    router->InitRegion2Store("http://10.77.70.212:10080/tables/benchbase/usertable/regions");
     router->InitTikv2Store("http://10.77.70.250:12379/pd/api/v1/stores");
 
 	// firewall
@@ -1874,10 +1874,15 @@ __exit_process_mysql_query:
 			dst_hg = search_rules_fast_routing_dest_hg(&this->rules_fast_routing, u, s, flagIN, true);
 		} else {
 			// lionrouter execute
-			std::vector<int> keys = router->ParseYcsbKey(query);
-			if(keys.size() > 0){
-				int hostgroupid = router->EvaluateHost(keys);
-				dst_hg = hostgroupid;
+			try {
+				std::vector<int> keys = router->ParseYcsbKey(query);
+				if(keys.size() > 0){
+					int hostgroupid = router->EvaluateHost(keys);
+					dst_hg = hostgroupid;
+				}
+			} catch (const std::exception& e) {
+				printf("Error in EvaluateHost: %s\n", e.what());
+				// throw;
 			}
 			// int rnd = random() % 5;
 			// int arr[] = {0, 1, 2, 3, 4};
